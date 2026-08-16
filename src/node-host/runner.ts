@@ -460,15 +460,13 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
   };
 
   const publishRunnerInventory = () => {
-    // The handshake keeps the immutable build ceiling. Live inventory withdraws
-    // only new-launch eligibility while full, leaving status/cancel negotiated.
     queueOptionalPublication(
       NODE_RUNNER_INVENTORY_UPDATE_METHOD,
       {
         protocolFeatures: [NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE],
-        ...(workerRunsAvailable && preparedRuntime.manifest.workerRuns
-          ? { workerRuns: preparedRuntime.manifest.workerRuns }
-          : {}),
+        workerHost: preparedRuntime.workerHostingEnabled
+          ? { enabled: true, capacity: workerRunsAvailable ? "available" : "full" }
+          : { enabled: false },
       },
       "runner inventory",
     );
@@ -507,7 +505,6 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
       caps: preparedRuntime.manifest.caps,
       commands: preparedRuntime.manifest.commands,
       computerUse: preparedRuntime.manifest.computerUse,
-      workerRuns: preparedRuntime.manifest.workerRuns,
       pathEnv: preparedRuntime.manifest.pathEnv,
       permissions: undefined,
       deviceIdentity: loadOrCreateDeviceIdentity(),
