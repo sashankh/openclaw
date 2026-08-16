@@ -10,7 +10,6 @@ import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
 } from "../../../../packages/gateway-protocol/src/client-info.js";
-import { WORKER_PROTOCOL_FEATURES } from "../../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type { DeviceIdentity } from "../../../../src/infra/device-identity.js";
 import { loadOrCreateDeviceIdentity } from "../../../../src/infra/device-identity.js";
 import {
@@ -24,14 +23,9 @@ import {
   NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
 } from "../../../../src/infra/node-runner-inventory.js";
 import { handleInvoke, type NodeInvokeRequestPayload } from "../../../../src/node-host/invoke.js";
-import { resolveNodeWorkerInstallation } from "../../../../src/node-host/node-worker-build.js";
 import { NodeWorkerBundleInstaller } from "../../../../src/node-host/node-worker-bundle-installer.js";
 import { createNodeWorkerSupervisor } from "../../../../src/node-host/node-worker-supervisor.js";
 import { NodeWorkerWorkspaceRuntime } from "../../../../src/node-host/node-worker-workspace.js";
-import {
-  WORKER_BUNDLE_ENTRY_PATH,
-  WORKER_BUNDLE_RSYNC_RECEIVER_PATH,
-} from "../../../../src/shared/worker-bundle-hash.js";
 import { VERSION } from "../../../../src/version.js";
 import { useAutoCleanupTempDirTracker } from "../../../helpers/temp-dir.js";
 import {
@@ -47,7 +41,6 @@ const SESSION_KEY = "agent:qa:node-worker-launch-wire";
 const NODE_DISPLAY_NAME = "QA Gateway-bundle worker node";
 const TEST_TIMEOUT_MS = PROOF_TIMEOUT_MS + 60_000;
 
-type NodeWorkerInstallation = Awaited<ReturnType<typeof resolveNodeWorkerInstallation>>;
 type Gateway = Awaited<ReturnType<typeof startQaGatewayChild>>;
 type GatewayEvent = { event: string; payload?: unknown };
 type NodeRead = {
@@ -134,27 +127,10 @@ async function createPublishedWorkspace(root: string) {
   return { commit, source: await fs.realpath(source), server };
 }
 
-async function createSourceWorkerInstallation(root: string): Promise<NodeWorkerInstallation> {
-  const packageRoot = path.join(root, "local-install");
-  const repoRoot = process.cwd();
-  await fs.mkdir(path.join(packageRoot, "dist", "worker"), { recursive: true });
-  for (const artifactPath of [WORKER_BUNDLE_ENTRY_PATH, WORKER_BUNDLE_RSYNC_RECEIVER_PATH]) {
-    const target = path.join(packageRoot, "dist", "worker", artifactPath);
-    await fs.copyFile(path.join(repoRoot, "dist", "worker", artifactPath), target);
-    await fs.chmod(target, 0o700);
-  }
-  return await resolveNodeWorkerInstallation({
-    packageRoot,
-    openclawVersion: VERSION,
-    protocolFeatures: WORKER_PROTOCOL_FEATURES,
-  });
-}
-
 async function connectClient(params: {
   gateway: Gateway;
   role: "operator" | "node";
   identity: DeviceIdentity | null;
-  workerRuns?: NodeWorkerInstallation["build"];
   onEvent?: (event: GatewayEvent) => void;
 }): Promise<GatewayClient> {
   return await new Promise<GatewayClient>((resolve, reject) => {
@@ -192,7 +168,6 @@ async function connectClient(params: {
       scopes: node ? [] : ["operator.admin", "operator.pairing", "operator.read", "operator.write"],
       caps: node ? ["system"] : undefined,
       commands: node ? [] : undefined,
-      workerRuns: params.workerRuns,
       deviceIdentity: params.identity,
       requestTimeoutMs: PROOF_TIMEOUT_MS,
       onEvent: params.onEvent,
@@ -267,7 +242,6 @@ async function connectPairedNode(params: {
   gateway: Gateway;
   operator: GatewayClient;
   identity: DeviceIdentity;
-  installation: NodeWorkerInstallation;
   onEvent: (event: GatewayEvent) => void;
 }): Promise<GatewayClient> {
   const connect = () =>
@@ -275,7 +249,6 @@ async function connectPairedNode(params: {
       gateway: params.gateway,
       role: "node",
       identity: params.identity,
-      workerRuns: params.installation.build,
       onEvent: params.onEvent,
     });
   let client: GatewayClient;
@@ -294,7 +267,7 @@ async function connectPairedNode(params: {
   }
   await client.request(NODE_RUNNER_INVENTORY_UPDATE_METHOD, {
     protocolFeatures: [NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE],
-    workerRuns: params.installation.build,
+    workerHost: { enabled: true, capacity: "available" },
   });
   return client;
 }
@@ -345,7 +318,6 @@ describe("node worker launch wire", () => {
       const root = tempDirs.make("openclaw-node-worker-launch-wire-");
       const provider = await startMidturnProvider();
       const published = await createPublishedWorkspace(root);
-      const installation = await createSourceWorkerInstallation(root);
       const nodeEnv = {
         ...process.env,
         HOME: path.join(root, "node-home"),
@@ -419,7 +391,6 @@ describe("node worker launch wire", () => {
                     gateway: gateway!,
                     operator: operator!,
                     identity,
-                    installation,
                     onEvent: onNodeEvent,
                   });
                 }
@@ -435,7 +406,6 @@ describe("node worker launch wire", () => {
           gateway,
           operator,
           identity,
-          installation,
           onEvent: onNodeEvent,
         });
         const listed = await waitForApprovedNode(operator, identity.deviceId);
@@ -466,7 +436,7 @@ describe("node worker launch wire", () => {
         const placement = (dispatched as { placement?: Record<string, unknown> }).placement;
         expect(placement).toMatchObject({
           state: "active",
-          workerBundleHash: installation.build.bundleHash,
+          workerBundleHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
         });
         const remoteWorkspaceDir = String(placement?.remoteWorkspaceDir ?? "");
         const baseManifestRef = placement?.workspaceBaseManifestRef;
